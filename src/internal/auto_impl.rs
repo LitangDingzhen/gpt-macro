@@ -66,6 +66,7 @@ impl<C: CodeCompletion> AutoImpl<C> {
 }
 
 pub fn auto_impl_impl(input: TokenStream) -> TokenStream {
+    dotenv::dotenv().ok();
     #[cfg(not(feature = "davinci"))]
     type Backend = crate::internal::chatgpt::ChatGPT;
 

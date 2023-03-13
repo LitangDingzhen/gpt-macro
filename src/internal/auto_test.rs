@@ -90,6 +90,7 @@ impl<C: CodeCompletion> AutoTest<C> {
 }
 
 pub fn auto_test_impl(args: TokenStream, input: TokenStream) -> TokenStream {
+    dotenv::dotenv().ok();
     // Parse the list of test function names that should be generated.
     let args = parse_macro_input!(args as Args);
 

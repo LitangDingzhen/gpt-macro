@@ -4,10 +4,13 @@
 // Ask GPT-3.5 to complete the given function.
 // Use hyper to send a POST request to the GPT-3.5 API.
 
+use hyper::client::HttpConnector;
 use hyper::header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use hyper::{Body, Client, Request, Uri};
+use hyper_proxy::{Intercept, Proxy, ProxyConnector};
 use hyper_tls::HttpsConnector;
 use serde::{Deserialize, Serialize};
+use std::any::Any;
 use tokio::runtime::Runtime;
 
 use crate::internal::completion::CodeCompletion;
@@ -63,26 +66,48 @@ impl TextCompletion {
         let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY is not set");
         let uri: Uri = Self::URL.parse()?;
 
-        let https = HttpsConnector::new();
-        let client = Client::builder().build::<_, hyper::Body>(https);
+        let https_connector = HttpsConnector::new();
+        let proxy_connector = if let Ok(proxy_uri) = std::env::var("HTTP_PROXY") {
+            let proxy_uri = proxy_uri.parse().unwrap();
+            let proxy = Proxy::new(Intercept::All, proxy_uri);
+            let proxy_connector =
+                ProxyConnector::from_proxy(https_connector.clone(), proxy).unwrap();
+            Some(proxy_connector)
+        } else {
+            None
+        };
+        let client = proxy_connector.map_or_else(
+            || Box::new(Client::builder().build::<_, hyper::Body>(https_connector)) as Box<dyn Any>,
+            |proxy| Box::new(Client::builder().build::<_, hyper::Body>(proxy)),
+        );
 
         let body = Body::from(serde_json::to_string(&self.request)?);
 
-        let mut request = Request::new(body);
+        let mut request_body = Request::new(body);
 
-        *request.method_mut() = hyper::Method::POST;
-        *request.uri_mut() = uri.clone();
+        *request_body.method_mut() = hyper::Method::POST;
+        *request_body.uri_mut() = uri.clone();
 
-        request
+        request_body
             .headers_mut()
             .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
-        request.headers_mut().insert(
+        request_body.headers_mut().insert(
             AUTHORIZATION,
             HeaderValue::from_str(&format!("Bearer {}", api_key)).unwrap(),
         );
-
-        let response = client.request(request).await?;
+        let request = move |req: Request<Body>| {
+            if let Some(c) = client.downcast_ref::<Client<HttpsConnector<HttpConnector>>>() {
+                c.request(req)
+            } else if let Some(c) =
+                client.downcast_ref::<Client<ProxyConnector<HttpsConnector<HttpConnector>>>>()
+            {
+                c.request(req)
+            } else {
+                panic!("Unknown client type");
+            }
+        };
+        let response = request(request_body).await?;
         let body_bytes = hyper::body::to_bytes(response.into_body()).await?;
         let body_str = String::from_utf8(body_bytes.to_vec())?;
 
